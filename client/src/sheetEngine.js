@@ -35,12 +35,117 @@ function expandRange(a, b) {
   return refs;
 }
 
+function resolveRef(ref, cells, seen) {
+  if (seen.has(ref)) return 0; // circular guard
+  seen.add(ref);
+  const raw = cells[ref]?.raw;
+  return evaluateCell(raw, cells, seen);
+}
+
+function splitArgs(str) {
+  const args = [];
+  let depth = 0;
+  let current = '';
+  let inQuotes = false;
+  for (const ch of str) {
+    if (ch === '"') inQuotes = !inQuotes;
+    if (ch === '(' && !inQuotes) depth++;
+    if (ch === ')' && !inQuotes) depth--;
+    if (ch === ',' && depth === 0 && !inQuotes) {
+      args.push(current.trim());
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  if (current.trim() !== '') args.push(current.trim());
+  return args;
+}
+
+function resolveArg(arg, cells, seen) {
+  const trimmed = arg.trim();
+  const quoted = /^"(.*)"$/.exec(trimmed);
+  if (quoted) return quoted[1];
+  if (trimmed.includes(':')) {
+    const [a, b] = trimmed.split(':');
+    return expandRange(a, b).map((r) => resolveRef(r, cells, seen));
+  }
+  if (/^[A-Z]+\d+$/.test(trimmed)) return resolveRef(trimmed, cells, seen);
+  const n = Number(trimmed);
+  if (!isNaN(n) && trimmed !== '') return n;
+  return trimmed;
+}
+
+function toNumberList(values) {
+  const flat = [];
+  for (const v of values) {
+    if (Array.isArray(v)) flat.push(...v.map((x) => Number(x)).filter((x) => !isNaN(x)));
+    else {
+      const n = Number(v);
+      if (!isNaN(n)) flat.push(n);
+    }
+  }
+  return flat;
+}
+
+const COMPARISON_RE = /^(.+?)(>=|<=|<>|=|>|<)(.+)$/;
+
+function evalCondition(cond, cells, seen) {
+  const m = COMPARISON_RE.exec(cond.trim());
+  if (!m) return Boolean(resolveArg(cond, cells, seen));
+  const [, leftRaw, op, rightRaw] = m;
+  const left = resolveArg(leftRaw, cells, seen);
+  const right = resolveArg(rightRaw, cells, seen);
+  const ln = Number(left);
+  const rn = Number(right);
+  const useNum = !isNaN(ln) && !isNaN(rn);
+  const l = useNum ? ln : left;
+  const r = useNum ? rn : right;
+  switch (op) {
+    case '>': return l > r;
+    case '<': return l < r;
+    case '>=': return l >= r;
+    case '<=': return l <= r;
+    case '<>': return l !== r;
+    case '=': return l === r;
+    default: return false;
+  }
+}
+
 const FUNCS = {
-  SUM: (vals) => vals.reduce((a, b) => a + b, 0),
-  AVERAGE: (vals) => (vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0),
-  MIN: (vals) => (vals.length ? Math.min(...vals) : 0),
-  MAX: (vals) => (vals.length ? Math.max(...vals) : 0),
-  COUNT: (vals) => vals.length,
+  SUM: (args, cells, seen) => toNumberList(args.map((a) => resolveArg(a, cells, seen))).reduce((a, b) => a + b, 0),
+  AVERAGE: (args, cells, seen) => {
+    const nums = toNumberList(args.map((a) => resolveArg(a, cells, seen)));
+    return nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : 0;
+  },
+  MIN: (args, cells, seen) => {
+    const nums = toNumberList(args.map((a) => resolveArg(a, cells, seen)));
+    return nums.length ? Math.min(...nums) : 0;
+  },
+  MAX: (args, cells, seen) => {
+    const nums = toNumberList(args.map((a) => resolveArg(a, cells, seen)));
+    return nums.length ? Math.max(...nums) : 0;
+  },
+  COUNT: (args, cells, seen) => toNumberList(args.map((a) => resolveArg(a, cells, seen))).length,
+  ABS: (args, cells, seen) => Math.abs(Number(resolveArg(args[0], cells, seen)) || 0),
+  ROUND: (args, cells, seen) => {
+    const val = Number(resolveArg(args[0], cells, seen)) || 0;
+    const decimals = args[1] !== undefined ? Number(resolveArg(args[1], cells, seen)) || 0 : 0;
+    const factor = 10 ** decimals;
+    return Math.round(val * factor) / factor;
+  },
+  POWER: (args, cells, seen) => {
+    const base = Number(resolveArg(args[0], cells, seen)) || 0;
+    const exp = Number(resolveArg(args[1], cells, seen)) || 0;
+    return base ** exp;
+  },
+  CONCATENATE: (args, cells, seen) => args.map((a) => String(resolveArg(a, cells, seen))).join(''),
+  TODAY: () => new Date().toLocaleDateString(),
+  IF: (args, cells, seen) => {
+    const condTrue = evalCondition(args[0], cells, seen);
+    const branch = condTrue ? args[1] : args[2];
+    return branch !== undefined ? resolveArg(branch, cells, seen) : '';
+  },
 };
 
 export function evaluateCell(raw, cells, seen = new Set()) {
@@ -51,29 +156,19 @@ export function evaluateCell(raw, cells, seen = new Set()) {
     return raw.trim() !== '' && !isNaN(n) ? n : raw;
   }
 
-  let expr = raw.slice(1).trim();
+  const expr = raw.slice(1).trim();
 
-  const funcMatch = /^([A-Z]+)\(([^)]*)\)$/.exec(expr);
+  const funcMatch = /^([A-Z]+)\((.*)\)$/.exec(expr);
   if (funcMatch) {
     const [, fnName, argsStr] = funcMatch;
     const fn = FUNCS[fnName.toUpperCase()];
     if (fn) {
-      const parts = argsStr.split(',').map((p) => p.trim()).filter(Boolean);
-      let refs = [];
-      for (const part of parts) {
-        if (part.includes(':')) {
-          const [a, b] = part.split(':');
-          refs.push(...expandRange(a, b));
-        } else {
-          refs.push(part);
-        }
+      const args = splitArgs(argsStr);
+      try {
+        return fn(args, cells, seen);
+      } catch {
+        return '#ERROR';
       }
-      const vals = refs.map((r) => {
-        const v = resolveRef(r, cells, seen);
-        const n = Number(v);
-        return isNaN(n) ? 0 : n;
-      });
-      return fn(vals);
     }
   }
 
@@ -91,11 +186,4 @@ export function evaluateCell(raw, cells, seen = new Set()) {
   } catch {
     return '#ERROR';
   }
-}
-
-function resolveRef(ref, cells, seen) {
-  if (seen.has(ref)) return 0; // circular guard
-  seen.add(ref);
-  const raw = cells[ref]?.raw;
-  return evaluateCell(raw, cells, seen);
 }

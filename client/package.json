@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "firebase": "^12.15.0",
+    "pako": "^2.2.0",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^6.0.227",
     "quill": "^2.0.3",

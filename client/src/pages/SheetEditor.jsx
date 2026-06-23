@@ -32,7 +32,21 @@ export default function SheetEditor() {
   }, [activeCell, cells]);
 
   function setCellRaw(ref, raw) {
-    setCells((prev) => ({ ...prev, [ref]: { raw } }));
+    setCells((prev) => ({ ...prev, [ref]: { ...prev[ref], raw } }));
+  }
+
+  function toggleFormat(key) {
+    setCells((prev) => {
+      const current = prev[activeCell] || { raw: '' };
+      return { ...prev, [activeCell]: { ...current, [key]: !current[key] } };
+    });
+  }
+
+  function setFormat(key, value) {
+    setCells((prev) => {
+      const current = prev[activeCell] || { raw: '' };
+      return { ...prev, [activeCell]: { ...current, [key]: value } };
+    });
   }
 
   function handleFormulaCommit(ref, value) {
@@ -53,6 +67,8 @@ export default function SheetEditor() {
   }, [rows, cols]);
 
   if (!doc) return <div className="loading-screen">Cargando hoja de cálculo...</div>;
+
+  const activeFmt = cells[activeCell] || {};
 
   return (
     <div className="editor-page">
@@ -80,8 +96,20 @@ export default function SheetEditor() {
             }
           }}
           onBlur={() => handleFormulaCommit(activeCell, formulaInput)}
-          placeholder="Escribe un valor o fórmula, ej: =SUM(A1:A5)"
+          placeholder="Escribe un valor o fórmula, ej: =SUM(A1:A5), =IF(A1>5,&quot;sí&quot;,&quot;no&quot;)"
         />
+      </div>
+      <div className="cell-format-bar">
+        <button className={`btn-icon ${activeFmt.bold ? 'active' : ''}`} onClick={() => toggleFormat('bold')}><b>B</b></button>
+        <button className={`btn-icon ${activeFmt.italic ? 'active' : ''}`} onClick={() => toggleFormat('italic')}><i>I</i></button>
+        <button className={`btn-icon ${activeFmt.underline ? 'active' : ''}`} onClick={() => toggleFormat('underline')}><u>U</u></button>
+        <div className="divider" />
+        <input type="color" title="Color de texto" value={activeFmt.color || '#1a1d29'} onChange={(e) => setFormat('color', e.target.value)} />
+        <input type="color" title="Color de relleno" value={activeFmt.bg || '#ffffff'} onChange={(e) => setFormat('bg', e.target.value)} />
+        <div className="divider" />
+        <button className={`btn-icon ${activeFmt.align === 'left' ? 'active' : ''}`} onClick={() => setFormat('align', 'left')}>⟸</button>
+        <button className={`btn-icon ${activeFmt.align === 'center' ? 'active' : ''}`} onClick={() => setFormat('align', 'center')}>≡</button>
+        <button className={`btn-icon ${activeFmt.align === 'right' ? 'active' : ''}`} onClick={() => setFormat('align', 'right')}>⟹</button>
       </div>
       <div className="sheet-scroll">
         <table className="sheet-grid">
@@ -98,8 +126,16 @@ export default function SheetEditor() {
               <tr key={r}>
                 <th>{r + 1}</th>
                 {row.map((ref) => {
-                  const raw = cells[ref]?.raw;
-                  const display = evaluateCell(raw, cells);
+                  const cellData = cells[ref] || {};
+                  const display = evaluateCell(cellData.raw, cells);
+                  const style = {
+                    fontWeight: cellData.bold ? 700 : 400,
+                    fontStyle: cellData.italic ? 'italic' : 'normal',
+                    textDecoration: cellData.underline ? 'underline' : 'none',
+                    color: cellData.color || undefined,
+                    background: cellData.bg || undefined,
+                    textAlign: cellData.align || 'left',
+                  };
                   return (
                     <td
                       key={ref}
@@ -107,6 +143,7 @@ export default function SheetEditor() {
                       onClick={() => setActiveCell(ref)}
                     >
                       <input
+                        style={style}
                         value={activeCell === ref ? formulaInput : display}
                         readOnly={activeCell !== ref}
                         onFocus={() => setActiveCell(ref)}
