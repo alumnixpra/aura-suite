@@ -159,3 +159,4 @@ input, textarea { font-family: inherit; }
 .pdf-page-block { background: #fff; border: 1px solid var(--aura-border); border-radius: 8px; padding: 14px; }
 .pdf-page-block textarea { width: 100%; border: 1px solid var(--aura-border); border-radius: 6px; padding: 10px; font-size: 13px; resize: vertical; }
 .hint-text { color: var(--aura-muted); font-size: 13px; }
+.pdf-upload-error { color: #d33; font-size: 13px; background: #fdecec; border: 1px solid #f0c0c0; border-radius: 8px; padding: 10px 16px; margin: 0 24px; }

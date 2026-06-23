@@ -3,25 +3,24 @@ import { useParams } from 'react-router-dom';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
-import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { storage } from '../firebase';
 import { getDocument } from '../firestoreDocs';
-import { useAuth } from '../AuthContext';
 import EditorHeader from '../components/EditorHeader';
 import useAutosave from '../useAutosave';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
+// Firestore limita cada documento a ~1MB; el base64 pesa ~33% más que el binario.
+const MAX_PDF_BYTES = 700 * 1024;
+
 export default function PdfEditor() {
   const { id } = useParams();
-  const { user } = useAuth();
   const [doc, setDoc] = useState(null);
   const [title, setTitle] = useState('');
   const [mode, setMode] = useState('create');
   const [pages, setPages] = useState([{ text: '' }]);
-  const [sourceUrl, setSourceUrl] = useState(null);
+  const [sourceFile, setSourceFile] = useState(null);
   const [downloadUrl, setDownloadUrl] = useState(null);
-  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState('');
   const canvasRefs = useRef([]);
 
   useEffect(() => {
@@ -31,16 +30,17 @@ export default function PdfEditor() {
       setTitle(document.title);
       setMode(content.mode || 'create');
       setPages(content.pages || [{ text: '' }]);
-      setSourceUrl(content.sourceUrl || null);
+      setSourceFile(content.sourceFile || null);
     });
   }, [id]);
 
-  const status = useAutosave(id, { title, content: { mode, pages, sourceUrl } }, 700);
+  const status = useAutosave(id, { title, content: { mode, pages, sourceFile } }, 700);
 
   useEffect(() => {
-    if (mode !== 'view' || !sourceUrl) return;
+    if (mode !== 'view' || !sourceFile) return;
     (async () => {
-      const pdf = await pdfjsLib.getDocument(sourceUrl).promise;
+      const bytes = Uint8Array.from(atob(sourceFile.split(',')[1]), (c) => c.charCodeAt(0));
+      const pdf = await pdfjsLib.getDocument({ data: bytes }).promise;
       canvasRefs.current = Array.from({ length: pdf.numPages });
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
@@ -53,25 +53,26 @@ export default function PdfEditor() {
         await page.render({ canvasContext: ctx, viewport }).promise;
       }
     })();
-  }, [mode, sourceUrl]);
+  }, [mode, sourceFile]);
 
-  async function handleUpload(e) {
+  function handleUpload(e) {
     const file = e.target.files[0];
     if (!file) return;
-    setUploading(true);
-    try {
-      const path = `pdfs/${user.id}/${id}-${Date.now()}.pdf`;
-      const fileRef = storageRef(storage, path);
-      await uploadBytes(fileRef, file);
-      const url = await getDownloadURL(fileRef);
-
-      const pdf = await pdfjsLib.getDocument(url).promise;
-      setSourceUrl(url);
-      setMode('view');
-      setPages(Array.from({ length: pdf.numPages }, () => ({ text: '' })));
-    } finally {
-      setUploading(false);
+    setUploadError('');
+    if (file.size > MAX_PDF_BYTES) {
+      setUploadError(`El PDF pesa ${(file.size / 1024).toFixed(0)}KB, el máximo permitido es ${(MAX_PDF_BYTES / 1024).toFixed(0)}KB (límite de Firestore en el plan gratuito).`);
+      return;
     }
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const dataUrl = reader.result;
+      setSourceFile(dataUrl);
+      setMode('view');
+      const bytes = Uint8Array.from(atob(dataUrl.split(',')[1]), (c) => c.charCodeAt(0));
+      const pdf = await pdfjsLib.getDocument({ data: bytes }).promise;
+      setPages(Array.from({ length: pdf.numPages }, () => ({ text: '' })));
+    };
+    reader.readAsDataURL(file);
   }
 
   function addPage() {
@@ -112,8 +113,8 @@ export default function PdfEditor() {
         extra={
           <div className="pdf-toolbar">
             <label className="btn-ghost upload-btn">
-              {uploading ? 'Subiendo...' : 'Subir PDF'}
-              <input type="file" accept="application/pdf" onChange={handleUpload} hidden disabled={uploading} />
+              Subir PDF
+              <input type="file" accept="application/pdf" onChange={handleUpload} hidden />
             </label>
             {mode === 'create' && <button className="btn-primary" onClick={generatePdf}>Generar PDF</button>}
             {downloadUrl && <a className="btn-ghost" href={downloadUrl} download={`${title}.pdf`}>Descargar</a>}
@@ -121,7 +122,9 @@ export default function PdfEditor() {
         }
       />
 
-      {mode === 'view' && sourceUrl ? (
+      {uploadError && <div className="pdf-upload-error">{uploadError}</div>}
+
+      {mode === 'view' && sourceFile ? (
         <div className="pdf-view-wrap">
           {pages.map((_, idx) => (
             <canvas key={idx} ref={(el) => (canvasRefs.current[idx] = el)} className="pdf-page-canvas" />
@@ -129,7 +132,7 @@ export default function PdfEditor() {
         </div>
       ) : (
         <div className="pdf-create-wrap">
-          <p className="hint-text">Escribe el contenido de cada página y genera tu PDF, o sube uno existente para visualizarlo.</p>
+          <p className="hint-text">Escribe el contenido de cada página y genera tu PDF, o sube uno existente (máx. {(MAX_PDF_BYTES / 1024).toFixed(0)}KB) para visualizarlo.</p>
           {pages.map((p, idx) => (
             <div key={idx} className="pdf-page-block">
               <h4>Página {idx + 1}</h4>
